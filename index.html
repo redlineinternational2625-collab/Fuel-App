@@ -231,6 +231,9 @@
   .lbl-qr img, .lbl-qr canvas { width: 84px !important; height: 84px !important; }
   .lbl-code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; letter-spacing: 1px; margin-top: 6px; }
   .lbl-brand { font-size: 11px; color: #555; margin-top: 4px; }
+  #regLabel { grid-template-columns: minmax(240px, 320px); justify-content: center; }
+  #regBody tr { cursor: pointer; }
+  #regBody .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
   @media print {
     .orb, header, .no-print { display: none !important; }
     body { background: #fff !important; padding: 0; }
@@ -454,6 +457,7 @@
         <input class="input small" id="mgTruckCode" placeholder="Barcode (auto if blank)" autocomplete="off" style="flex:1 1 160px;" />
         <button class="btn-gray" id="mgAddTruck">Add</button>
         <button class="btn-gray" id="btnLabels">Print labels</button>
+        <button class="btn-gray" id="btnRegister">&#128247; Scan registration</button>
       </div>
 
       <div class="sec-title">Drivers &mdash; tap &#10005; to remove</div>
@@ -523,6 +527,68 @@
     <div class="hint left">Red = flagged: over 55 gal in one fill, MPG under 60% of this truck's average, or an odometer reading that went backwards or jumped too far. Gas-can fuel is listed but never flagged.</div>
   </section>
 
+  <!-- ============ REGISTRATIONS (scan a registration -> asset + QR label) ============ -->
+  <section id="viewRegister" class="hidden">
+    <button class="btn-gray" id="btnRegBack" style="margin-bottom:12px;">&larr; Back to reports</button>
+    <div class="card" id="regFormCard">
+      <div class="sec-intro">Scan a vehicle registration</div>
+      <button class="btn-scan" id="btnRegScan">&#128247; Photograph Registration &mdash; Auto-Fill</button>
+      <input type="file" id="inReg" accept="image/*" class="hidden" />
+      <div id="regStatus" class="banner hidden" style="margin-top:8px;"></div>
+      <div class="hint" style="margin-top:0; margin-bottom:16px;">Or type it in below</div>
+
+      <div class="field">
+        <label class="label" for="regTruck">Which truck is this?</label>
+        <select class="input small" id="regTruck"></select>
+        <input class="input small" id="regName" placeholder="Name for the new one (e.g. Truck 12, Trailer 3)" autocomplete="off" style="margin-top:10px;" />
+        <div class="hint left" id="regMatch"></div>
+      </div>
+      <div class="manage-row" style="margin-bottom:18px;">
+        <select class="input small" id="regKind" style="flex:0 0 140px;"><option>Truck</option><option>Equipment</option></select>
+        <select class="input small" id="regFuel" style="flex:0 0 110px;"><option>Diesel</option><option>Gas</option></select>
+        <label class="chk"><input type="checkbox" id="regDef" checked /> Uses DEF</label>
+      </div>
+      <div class="field two-col">
+        <div><label class="label" for="regPlate">Plate</label><input class="input small" id="regPlate" autocomplete="off" /></div>
+        <div><label class="label" for="regState">State</label><input class="input small" id="regState" maxlength="2" placeholder="e.g. UT" autocomplete="off" /></div>
+      </div>
+      <div class="field">
+        <label class="label" for="regVin">VIN</label>
+        <input class="input small" id="regVin" maxlength="20" autocomplete="off" style="font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px;" />
+        <div class="hint left" id="regVinHint"></div>
+      </div>
+      <div class="field two-col">
+        <div><label class="label" for="regYear">Year</label><input class="input small" id="regYear" type="tel" maxlength="4" autocomplete="off" /></div>
+        <div><label class="label" for="regExpires">Registration expires</label><input class="input small" id="regExpires" type="date" /></div>
+      </div>
+      <div class="field two-col">
+        <div><label class="label" for="regMake">Make</label><input class="input small" id="regMake" autocomplete="off" /></div>
+        <div><label class="label" for="regModel">Model</label><input class="input small" id="regModel" autocomplete="off" /></div>
+      </div>
+      <div class="field">
+        <label class="label" for="regOwner">Registered owner</label>
+        <input class="input small" id="regOwner" autocomplete="off" />
+      </div>
+      <div id="regError" class="banner err hidden"></div>
+      <button class="btn-save" id="btnRegSave">Save &amp; Make QR Code</button>
+    </div>
+
+    <div class="card hidden" id="regDoneCard">
+      <div class="banner ok" id="regDoneMsg"></div>
+      <div class="labels" id="regLabel"></div>
+      <div class="manage-row" style="margin:16px 0 0;">
+        <button class="btn-export" id="btnRegPrint">Print this label</button>
+        <button class="btn-gray" id="btnRegAnother">Scan another</button>
+      </div>
+    </div>
+
+    <div class="card table-card">
+      <div class="sec-title pad">Registrations on file &mdash; tap one to edit it</div>
+      <div class="empty hidden" id="regEmpty"></div>
+      <div class="table-scroll" id="regWrap"><table><thead><tr><th>Name</th><th>Plate</th><th>VIN</th><th>Vehicle</th><th>Expires</th><th>Label</th></tr></thead><tbody id="regBody"></tbody></table></div>
+    </div>
+  </section>
+
   <!-- ============ LABELS (print) ============ -->
   <section id="viewLabels" class="hidden">
     <div class="no-print" style="margin-bottom:14px;">
@@ -573,6 +639,7 @@
   var operator = "", opReturnView = "scan";
   var loadProduct = "Diesel", scanDate = "", scanTime = "", loadForce = false;
   var tdChart = null, detailTruck = "";
+  var regs = [], regsError = "", regBusy = false, labelsOnly = null, labelsBack = "reports";
 
   // ---------- helpers ----------
   function $(id) { return document.getElementById(id); }
@@ -826,22 +893,23 @@
   }
 
   // ---------- view switching ----------
-  var VIEWS = ["operator", "scan", "fill", "load", "pin", "reports", "truck", "labels"];
+  var VIEWS = ["operator", "scan", "fill", "load", "pin", "reports", "truck", "labels", "register"];
   function setView(v) {
     view = v;
     VIEWS.forEach(function (x) { $("view" + x.charAt(0).toUpperCase() + x.slice(1)).classList.toggle("hidden", x !== v); });
     $("tabScan").classList.toggle("active", v === "scan" || v === "fill" || v === "operator");
     $("tabLoad").classList.toggle("active", v === "load");
-    $("tabReports").classList.toggle("active", v === "reports" || v === "pin" || v === "truck" || v === "labels");
+    $("tabReports").classList.toggle("active", v === "reports" || v === "pin" || v === "truck" || v === "labels" || v === "register");
     if (v === "reports") { fetchRemote(); renderReports(); }
     if (v === "truck") renderTruckDetail();
     if (v === "labels") renderLabels();
+    if (v === "register") renderRegister();
     if (v === "scan") resetScanScreen();
     if (v !== "fill" && v !== "scan") { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); }
     window.scrollTo(0, 0);
   }
   function relock() {
-    unlocked = false; sessionPin = ""; changingPin = false; newPinFirst = ""; pinInput = "";
+    unlocked = false; sessionPin = ""; changingPin = false; newPinFirst = ""; pinInput = ""; regs = [];
     hidePinError(); renderPinScreen();
   }
   $("tabScan").addEventListener("click", function () { relock(); setView("scan"); });
@@ -852,7 +920,7 @@
     setView("pin");
   });
   $("btnBackReports").addEventListener("click", function () { setView("reports"); });
-  $("btnLabelsBack").addEventListener("click", function () { setView("reports"); });
+  $("btnLabelsBack").addEventListener("click", function () { var back = labelsBack; labelsOnly = null; labelsBack = "reports"; setView(back); });
   $("btnLabelsPrint").addEventListener("click", function () { window.print(); });
 
   // ---------- operator (remembered on this tablet) ----------
@@ -891,7 +959,7 @@
   // ---------- barcode scanner (keyboard-wedge) listener ----------
   var scanChars = [], scanTimes = [];
   document.addEventListener("keydown", function (ev) {
-    if (view === "pin" || view === "labels") return;
+    if (view === "pin" || view === "labels" || view === "register") return;
     var now = Date.now();
     if (scanTimes.length && now - scanTimes[scanTimes.length - 1] > 250) { scanChars = []; scanTimes = []; }
     if (ev.key === "Enter" || ev.key === "Tab") {
@@ -1701,21 +1769,203 @@
       st.textContent = "\u2713 Imported " + (c.fillups || 0) + " fill-ups, " + (c.loads || 0) + " tank loads, " + (c.assets || 0) + " trucks, " + (c.drivers || 0) + " drivers. Tap \u21BB to refresh.";
     } catch (e) { st.textContent = "Couldn't import: " + String(e.message || e); }
   });
-  $("btnLabels").addEventListener("click", function () { setView("labels"); });
+  $("btnLabels").addEventListener("click", function () {
+    labelsOnly = null; labelsBack = "reports"; setView("labels");
+    fetchRegs().then(function () { if (view === "labels") renderLabels(); });   // adds plates to the labels
+  });
 
   // ---------- printable labels (barcode for the scanner + QR for phones) ----------
+  function regFor(name) {
+    var k = normKey(name);
+    for (var i = 0; i < regs.length; i++) if (normKey(regs[i].name) === k) return regs[i];
+    return null;
+  }
+  function buildLabel(t) {
+    var base = location.origin + location.pathname, r = regFor(t.name);
+    var d = document.createElement("div"); d.className = "lbl";
+    d.innerHTML = '<div class="lbl-name">' + esc(t.name) + '</div><div class="lbl-bar"><svg></svg></div><div class="lbl-row"><div class="lbl-qr"></div><div><div class="lbl-code">' + esc(t.code) + '</div><div class="lbl-brand">Maile Concrete \u00b7 ' + (t.fuelType === "Gas" ? "GAS" : "DIESEL") + (t.usesDef ? " + DEF" : "") + '</div>' +
+      (r && r.plate ? '<div class="lbl-brand">Plate ' + esc(r.plate) + (r.state ? " (" + esc(r.state) + ")" : "") + '</div>' : "") + '</div></div>';
+    try { if (typeof JsBarcode !== "undefined") JsBarcode(d.querySelector("svg"), t.code, { format: "CODE128", displayValue: false, height: 54, width: 2, margin: 0 }); } catch (e) {}
+    try { if (typeof QRCode !== "undefined") new QRCode(d.querySelector(".lbl-qr"), { text: base + "?code=" + encodeURIComponent(t.code), width: 84, height: 84, correctLevel: QRCode.CorrectLevel.M }); } catch (e) {}
+    return d;
+  }
   function renderLabels() {
     var grid = $("labelsGrid"); grid.innerHTML = "";
-    var base = location.origin + location.pathname;
-    trucks.forEach(function (t) {
-      var d = document.createElement("div"); d.className = "lbl";
-      d.innerHTML = '<div class="lbl-name">' + esc(t.name) + '</div><div class="lbl-bar"><svg></svg></div><div class="lbl-row"><div class="lbl-qr"></div><div><div class="lbl-code">' + esc(t.code) + '</div><div class="lbl-brand">Maile Concrete \u00b7 ' + (t.fuelType === "Gas" ? "GAS" : "DIESEL") + (t.usesDef ? " + DEF" : "") + '</div></div></div>';
-      grid.appendChild(d);
-      try { if (typeof JsBarcode !== "undefined") JsBarcode(d.querySelector("svg"), t.code, { format: "CODE128", displayValue: false, height: 54, width: 2, margin: 0 }); } catch (e) {}
-      try { if (typeof QRCode !== "undefined") new QRCode(d.querySelector(".lbl-qr"), { text: base + "?code=" + encodeURIComponent(t.code), width: 84, height: 84, correctLevel: QRCode.CorrectLevel.M }); } catch (e) {}
-    });
-    if (!trucks.length) grid.innerHTML = '<div class="hint">No trucks or equipment in the list yet.</div>';
+    var list = labelsOnly ? trucks.filter(function (t) { return labelsOnly.indexOf(t.code) >= 0; }) : trucks;
+    list.forEach(function (t) { grid.appendChild(buildLabel(t)); });
+    if (!list.length) grid.innerHTML = '<div class="hint">No trucks or equipment in the list yet.</div>';
   }
+  function printOneLabel(code) {
+    labelsOnly = [code]; labelsBack = "register";
+    setView("labels");
+    setTimeout(function () { window.print(); }, 400);
+  }
+
+  // ---------- registrations: photo -> details -> truck + QR label ----------
+  async function fetchRegs() {
+    try { regs = (await sbRpc("admin_registrations", { p_pin: sessionPin })) || []; regsError = ""; }
+    catch (e) { regs = []; regsError = String(e && e.message ? e.message : e); }
+  }
+  function vinCheck(v) {
+    v = String(v || "").toUpperCase();
+    if (!v) return "";
+    if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return v.length === 17 ? "Has a letter a VIN can't have (I, O or Q) \u2014 double-check it." : v.length + " characters \u2014 most VINs are 17. Double-check it against the card.";
+    var vals = { A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8, J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9, S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9 };
+    var w = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2], sum = 0;
+    for (var i = 0; i < 17; i++) { var c = v.charAt(i); sum += (/\d/.test(c) ? Number(c) : vals[c]) * w[i]; }
+    var chk = sum % 11 === 10 ? "X" : String(sum % 11);
+    return chk === v.charAt(8) ? "\u2713 VIN checks out" : "VIN check digit doesn't match \u2014 one character may be misread. Compare it to the card.";
+  }
+  function regByVin(vin) {
+    var k = normKey(vin);
+    if (k.length < 11) return null;
+    for (var i = 0; i < regs.length; i++) if (normKey(regs[i].vin) === k) return regs[i];
+    return null;
+  }
+  function fillRegTruckSelect(selected) {
+    var sel = $("regTruck"); sel.innerHTML = '<option value="">+ New truck or equipment</option>';
+    trucks.forEach(function (t) {
+      var o = document.createElement("option"); o.value = t.name;
+      o.textContent = t.name + (regFor(t.name) ? " (registration on file)" : "");
+      sel.appendChild(o);
+    });
+    sel.value = selected && truckInfo(selected) ? truckInfo(selected).name : "";
+    onRegTruckChange();
+  }
+  function onRegTruckChange() {
+    var name = $("regTruck").value, t = name ? truckInfo(name) : null;
+    $("regName").classList.toggle("hidden", !!t);
+    if (t) { $("regKind").value = t.kind; $("regFuel").value = t.fuelType; $("regDef").checked = !!t.usesDef; }
+    updateRegHints();
+  }
+  function updateRegHints() {
+    var vin = $("regVin").value.trim(), h = $("regVinHint"), msg = vinCheck(vin);
+    h.textContent = msg; h.style.color = /^\u2713/.test(msg) ? "var(--green)" : (msg ? "#c0392b" : "");
+    var on = regByVin(vin), picked = $("regTruck").value, m = $("regMatch");
+    m.textContent = on && normKey(on.name) !== normKey(picked) ? "This VIN is already on file for " + on.name + ". Saving here will add it to the truck picked above too." : "";
+  }
+  function clearRegForm() {
+    ["regName", "regPlate", "regState", "regVin", "regYear", "regExpires", "regMake", "regModel", "regOwner"].forEach(function (id) { $(id).value = ""; });
+    $("regKind").value = "Truck"; $("regFuel").value = "Diesel"; $("regDef").checked = true;
+    $("regStatus").classList.add("hidden"); hideErr("regError");
+    fillRegTruckSelect("");
+  }
+  function loadRegIntoForm(r) {
+    fillRegTruckSelect(r.name);
+    $("regPlate").value = r.plate || ""; $("regState").value = r.state || ""; $("regVin").value = r.vin || "";
+    $("regYear").value = r.year || ""; $("regExpires").value = r.expires || ""; $("regMake").value = r.make || "";
+    $("regModel").value = r.model || ""; $("regOwner").value = r.owner || "";
+    $("regDoneCard").classList.add("hidden"); $("regFormCard").classList.remove("hidden");
+    hideErr("regError"); $("regStatus").classList.add("hidden"); updateRegHints();
+    window.scrollTo(0, 0);
+  }
+  function renderRegTable() {
+    var body = $("regBody"), empty = $("regEmpty"); body.innerHTML = "";
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var soon = new Date(today.getTime() + 30 * 24 * 3600 * 1000);
+    empty.classList.toggle("hidden", regs.length > 0 && !regsError);
+    $("regWrap").classList.toggle("hidden", !regs.length);
+    empty.textContent = regsError ? "Couldn't load registrations. Run the latest setup.sql in Supabase. (" + regsError + ")" : "No registrations scanned yet.";
+    regs.forEach(function (r) {
+      var exp = r.expires ? new Date(r.expires + "T00:00:00") : null;
+      var late = exp && exp < today, near = exp && !late && exp <= soon;
+      var tr = document.createElement("tr");
+      tr.innerHTML = '<td>' + esc(r.name) + (r.active ? "" : ' <span class="hint">(removed)</span>') + '</td><td>' + esc(r.plate || dash()) + (r.state ? " " + esc(r.state) : "") + '</td>' +
+        '<td class="mono">' + esc(r.vin || dash()) + '</td><td>' + esc([r.year, r.make, r.model].filter(Boolean).join(" ") || dash()) + '</td>' +
+        '<td class="' + (late || near ? "flag" : "") + '">' + (exp ? fmtDateFull(exp) + (late ? " (expired)" : near ? " (soon)" : "") : dash()) + '</td>' +
+        '<td><button class="btn-gray">QR</button></td>';
+      tr.querySelector("button").addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        if (!assetByCode(r.code)) return alert(r.name + " isn't in the active truck list. Save it again to bring it back.");
+        printOneLabel(r.code);
+      });
+      tr.addEventListener("click", function () { loadRegIntoForm(r); });
+      body.appendChild(tr);
+    });
+  }
+  async function renderRegister() {
+    if (!unlocked) { setView("pin"); return; }
+    $("regDoneCard").classList.add("hidden"); $("regFormCard").classList.remove("hidden");
+    fillRegTruckSelect($("regTruck").value);
+    $("regEmpty").textContent = "Loading\u2026"; $("regEmpty").classList.remove("hidden");
+    await fetchRegs();
+    fillRegTruckSelect($("regTruck").value);
+    renderRegTable();
+  }
+  $("btnRegister").addEventListener("click", function () { clearRegForm(); setView("register"); });
+  $("btnRegBack").addEventListener("click", function () { setView("reports"); });
+  $("regTruck").addEventListener("change", onRegTruckChange);
+  $("regVin").addEventListener("input", updateRegHints);
+  $("btnRegAnother").addEventListener("click", function () { clearRegForm(); $("regDoneCard").classList.add("hidden"); $("regFormCard").classList.remove("hidden"); window.scrollTo(0, 0); });
+  $("btnRegScan").addEventListener("click", function () {
+    if (regBusy) return;
+    if (!connected) return showRegStatus("err", "Scanning needs the Supabase connection.");
+    $("inReg").value = ""; $("inReg").click();
+  });
+  function showRegStatus(kind, msg) { var el = $("regStatus"); el.className = "banner " + (kind === "ok" ? "ok" : kind === "info" ? "info" : "err"); el.textContent = msg; }
+  function regScanDone() { regBusy = false; var b = $("btnRegScan"); b.disabled = false; b.innerHTML = "&#128247; Photograph Registration &mdash; Auto-Fill"; }
+  $("inReg").addEventListener("change", function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    regBusy = true;
+    var btn = $("btnRegScan"); btn.disabled = true; btn.textContent = "Reading registration\u2026";
+    showRegStatus("info", "Reading the registration \u2014 a few seconds\u2026");
+    resizeImage(file, 2000, function (b64) {
+      if (!b64) { regScanDone(); return showRegStatus("err", "Couldn't read that photo \u2014 try again."); }
+      fetch(SUPABASE_URL + "/functions/v1/scan-registration", { method: "POST", headers: sbHeaders(), body: JSON.stringify({ image: b64, mime: "image/jpeg" }) })
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          regScanDone();
+          if (resp && resp.ok && resp.fields) return applyRegFields(resp.fields);
+          showRegStatus("err", "Couldn't read the registration \u2014 type it in. " + (resp && resp.error ? "(" + resp.error + ")" : "(Is the scan-registration function deployed?)"));
+        })
+        .catch(function () { regScanDone(); showRegStatus("err", "Couldn't reach the registration reader \u2014 type it in, or check that scan-registration is deployed."); });
+    });
+  });
+  function applyRegFields(f) {
+    var set = function (id, v) { if (v != null && String(v).trim() !== "") $(id).value = String(v).trim(); };
+    set("regPlate", f.plate); set("regState", f.state); set("regVin", f.vin); set("regYear", f.year);
+    set("regMake", f.make); set("regModel", f.model); set("regOwner", f.owner);
+    if (f.expires && /^\d{4}-\d{2}-\d{2}$/.test(String(f.expires))) $("regExpires").value = f.expires;
+    // Which truck is it? Same VIN already on file, else the unit number on the card, else a new one.
+    var on = regByVin(f.vin), unitName = f.unit ? bestMatch(String(f.unit), truckNames()) : null;
+    var match = on && truckInfo(on.name) ? on.name : unitName;
+    fillRegTruckSelect(match || "");
+    if (!match) {
+      $("regName").value = f.unit ? "Truck " + String(f.unit).trim() : [f.make, f.vin ? String(f.vin).slice(-4) : ""].filter(Boolean).join(" ");
+      if (f.fuel) { $("regFuel").value = f.fuel === "Gas" ? "Gas" : "Diesel"; $("regDef").checked = f.fuel !== "Gas"; }
+    }
+    var got = ["plate", "vin", "year", "make", "expires"].filter(function (k) { return f[k]; }).length;
+    showRegStatus(got ? "ok" : "err", got ? "\u2713 Filled in from the photo" + (match ? " \u2014 matched to " + match : "") + ". Check everything, then save." : "Couldn't make out the details \u2014 try a closer, flatter photo or type them in.");
+    updateRegHints();
+  }
+  $("btnRegSave").addEventListener("click", async function () {
+    hideErr("regError");
+    var typed = $("regName").value.trim(), same = typed ? truckInfo(typed) : null;   // "truck 12" = the existing Truck 12
+    var name = $("regTruck").value || (same ? same.name : typed);
+    if (!name) return showErr("regError", "Pick the truck, or type a name for a new one.");
+    var year = $("regYear").value.trim();
+    if (year && !/^\d{4}$/.test(year)) return showErr("regError", "Year should be 4 digits, like 2019.");
+    var btn = this; btn.disabled = true; btn.textContent = "Saving\u2026";
+    try {
+      var res = await sbRpc("admin_save_registration", {
+        p_pin: sessionPin, p_name: name, p_kind: $("regKind").value, p_fuel: $("regFuel").value, p_def: $("regDef").checked,
+        p_plate: $("regPlate").value.trim(), p_state: $("regState").value.trim(), p_vin: $("regVin").value.trim().toUpperCase().replace(/\s+/g, ""),
+        p_year: year, p_make: $("regMake").value.trim(), p_model: $("regModel").value.trim(), p_owner: $("regOwner").value.trim(), p_expires: $("regExpires").value
+      });
+      await Promise.all([fetchLists(), fetchRegs()]);
+      var t = truckInfo(res.name) || { name: res.name, code: res.code, fuelType: $("regFuel").value, usesDef: $("regDef").checked };
+      $("regDoneMsg").textContent = "\u2713 Saved " + t.name + " \u2014 its code is " + t.code + ".";
+      var box = $("regLabel"); box.innerHTML = ""; box.appendChild(buildLabel(t));
+      $("btnRegPrint").onclick = function () { printOneLabel(t.code); };
+      $("regFormCard").classList.add("hidden"); $("regDoneCard").classList.remove("hidden");
+      renderRegTable(); renderManage();
+      window.scrollTo(0, 0);
+    } catch (e) {
+      var msg = String(e && e.message ? e.message : e);
+      showErr("regError", /function .*does not exist|Could not find the function/i.test(msg) ? "The database needs the latest setup.sql \u2014 run it in Supabase, then try again." : "Couldn't save: " + msg);
+    } finally { btn.disabled = false; btn.textContent = "Save & Make QR Code"; }
+  });
 
   // ---------- Excel export ----------
   $("btnExport").addEventListener("click", function () {

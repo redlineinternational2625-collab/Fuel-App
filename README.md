@@ -9,6 +9,7 @@ Fuel log for Maile Concrete. Drivers use a shop tablet to log truck, equipment a
 | `index.html` | The whole app in one file. Open it in a browser on the tablet. |
 | `supabase/setup.sql` | Database setup: tables, security rules and the PIN-checked functions the app calls. |
 | `supabase/functions/scan-receipt/index.ts` | Edge Function that reads a receipt photo with Gemini and returns vendor, address, date, time, line items and total. |
+| `supabase/functions/scan-registration/index.ts` | Edge Function that reads a vehicle registration photo with Gemini and returns plate, state, VIN, year, make, model, owner and expiry. |
 
 ## 1. Set up the database
 
@@ -32,13 +33,32 @@ To update the scanner later, open the function, paste the new file over the old 
 
 The function tries several Gemini models in order (the `MODELS` list at the top of the file) and falls back to the next one if a model is missing or busy.
 
-## 3. Point the app at your project
+## 3. Deploy the registration scanner
+
+1. In Supabase, go to **Edge Functions** > **Deploy a new function** > **Via editor**.
+2. Name it exactly `scan-registration`.
+3. Paste the whole of `supabase/functions/scan-registration/index.ts` and click **Deploy**.
+
+It uses the same `GEMINI_API_KEY` secret as the receipt scanner, so there is nothing else to set.
+
+## 4. Point the app at your project
 
 Near the top of the script in `index.html` are `SUPABASE_URL` and `SUPABASE_ANON_KEY`. They must match **Project Settings** > **API** in Supabase. The anon key is meant to be public; the database rules below are what keep the logs safe.
+
+## Scanning registrations and making QR codes
+
+1. Open **Reports**, enter the PIN, tap **Manage**, then **Scan registration**.
+2. Tap **Photograph Registration** and take a photo of the registration card. The plate, VIN, year, make, model, owner and expiry fill in.
+3. Under **Which truck is this?** pick the truck it belongs to, or leave it on **New truck or equipment** and type a name like `Truck 12`. If the VIN or unit number is already known, it is picked for you.
+4. Check the details (the VIN gets a check-digit test, so a misread character is flagged) and tap **Save & Make QR Code**.
+5. Tap **Print this label** to print that one label, or use **Print labels** in Manage to print all of them.
+
+New trucks get an `MC-NAME` barcode. Re-scanning a truck that already has a barcode keeps the same one, so labels already on trucks keep working. The list at the bottom shows every registration on file and marks ones that are expired or expire within 30 days.
 
 ## How security works
 
 - The tablet uses the anon key, which can only read active trucks, equipment and drivers, and add new fill-ups and tank loads.
+- Registrations (plates, VINs, owner names) are only readable with the PIN; the tablet's public key cannot see them.
 - Reports, deleting entries, managing the truck and driver lists, and the one-time import all go through database functions that check the 4-digit Reports PIN. The PIN is stored as a bcrypt hash, never in plain text.
 
 ## Conventions
