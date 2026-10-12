@@ -231,3 +231,81 @@ begin
 
   return json_build_object('fillups', n_f, 'loads', n_l, 'assets', n_a, 'drivers', n_d);
 end $$;
+
+-- ---------- vehicle registrations (scanned from the registration card) ----------
+-- One row per truck / trailer / piece of equipment. No anon policy: plates, VINs and
+-- owner names are only read and written through the PIN-checked functions below.
+create table if not exists public.registrations (
+  asset_id uuid primary key references public.assets(id) on delete cascade,
+  plate text not null default '',
+  state text not null default '',
+  vin text not null default '',
+  year int,
+  make text not null default '',
+  model text not null default '',
+  owner text not null default '',
+  expires date,
+  updated_at timestamptz not null default now()
+);
+create index if not exists registrations_vin on public.registrations (vin);
+alter table public.registrations enable row level security;
+
+-- Save a scanned registration. Creates the truck if the name is new (with an MC-NAME barcode),
+-- otherwise keeps its existing barcode so labels already printed keep working.
+create or replace function public.admin_save_registration(
+  p_pin text, p_name text, p_kind text, p_fuel text, p_def boolean,
+  p_plate text, p_state text, p_vin text, p_year text, p_make text, p_model text, p_owner text, p_expires text)
+returns json language plpgsql security definer set search_path = public as $$
+declare
+  v_name text := trim(coalesce(p_name, ''));
+  v_fuel text := case when p_fuel in ('Gas', 'Unleaded') then 'Gas' else 'Diesel' end;
+  v_kind text := case when p_kind = 'Equipment' then 'Equipment' else 'Truck' end;
+  v_id uuid; v_code text; v_base text; v_n int := 1; v_expires date; v_year int;
+begin
+  if not public.pin_ok(p_pin) then raise exception 'wrong pin'; end if;
+  if v_name = '' then raise exception 'name required'; end if;
+
+  if coalesce(p_year, '') ~ '^[0-9]{4}$' then v_year := p_year::int; end if;
+  begin
+    if coalesce(p_expires, '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then v_expires := p_expires::date; end if;
+  exception when others then v_expires := null;
+  end;
+
+  select id, code into v_id, v_code from public.assets where name = v_name;
+  if v_id is null then
+    v_base := public.make_code(v_name);
+    v_code := v_base;
+    while exists (select 1 from public.assets where code = v_code) loop
+      v_n := v_n + 1; v_code := v_base || '-' || v_n;
+    end loop;
+    insert into public.assets (name, fuel_type, uses_def, kind, code, driver, active)
+    values (v_name, v_fuel, coalesce(p_def, true), v_kind, v_code, '', true)
+    returning id into v_id;
+  else
+    update public.assets set fuel_type = v_fuel, uses_def = coalesce(p_def, true), kind = v_kind, active = true
+    where id = v_id;
+  end if;
+
+  insert into public.registrations (asset_id, plate, state, vin, year, make, model, owner, expires, updated_at)
+  values (v_id, upper(trim(coalesce(p_plate, ''))), upper(trim(coalesce(p_state, ''))), upper(trim(coalesce(p_vin, ''))),
+          v_year, trim(coalesce(p_make, '')), trim(coalesce(p_model, '')), trim(coalesce(p_owner, '')), v_expires, now())
+  on conflict (asset_id) do update set
+    plate = excluded.plate, state = excluded.state, vin = excluded.vin, year = excluded.year, make = excluded.make,
+    model = excluded.model, owner = excluded.owner, expires = excluded.expires, updated_at = now();
+
+  return json_build_object('name', v_name, 'code', v_code);
+end $$;
+
+-- Every registration on file, with the truck's name and barcode (PIN required)
+create or replace function public.admin_registrations(p_pin text)
+returns json language plpgsql security definer stable set search_path = public as $$
+begin
+  if not public.pin_ok(p_pin) then raise exception 'wrong pin'; end if;
+  return (
+    select coalesce(json_agg(json_build_object(
+      'name', a.name, 'code', a.code, 'kind', a.kind, 'active', a.active,
+      'plate', r.plate, 'state', r.state, 'vin', r.vin, 'year', r.year, 'make', r.make, 'model', r.model,
+      'owner', r.owner, 'expires', r.expires, 'updated_at', r.updated_at) order by a.name), '[]'::json)
+    from public.registrations r join public.assets a on a.id = r.asset_id
+  );
+end $$;
